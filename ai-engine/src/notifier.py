@@ -112,7 +112,6 @@ async def _send_google_chat(
                         {
                             "header": "📊 AI Analysis",
                             "collapsible": True,
-                            "initialCollapseState": "EXPANDED" if status in ("warning", "critical") else "COLLAPSED",
                             "widgets": [
                                 {"textParagraph": {"text": report_preview.replace("\n", "<br>")}}
                             ],
