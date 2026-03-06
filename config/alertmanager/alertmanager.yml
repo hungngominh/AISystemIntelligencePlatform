@@ -1,0 +1,36 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'team']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'ai-engine'
+  routes:
+    - match:
+        severity: critical
+      receiver: ai-engine-critical
+    - match:
+        team: ai
+      receiver: ai-engine
+
+receivers:
+  # AI Engine nhận TẤT CẢ alerts để phân tích
+  - name: 'ai-engine'
+    webhook_configs:
+      - url: 'http://ai-engine:8765/api/webhooks/alertmanager'
+        send_resolved: true
+
+  # Critical alerts — AI Engine phân tích ưu tiên cao
+  - name: 'ai-engine-critical'
+    webhook_configs:
+      - url: 'http://ai-engine:8765/api/webhooks/alertmanager'
+        send_resolved: true
+
+inhibit_rules:
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ['alertname', 'endpoint']

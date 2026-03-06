@@ -1,0 +1,74 @@
+groups:
+  - name: slo_alerts
+    rules:
+      - alert: HighAPILatency
+        expr: job:api_request_duration_seconds:p95 > 2.0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "API p95 latency above SLO ({{ $value | humanizeDuration }})"
+          description: "Endpoint {{ $labels.endpoint }} p95 latency is {{ $value }}s, SLO is 2s"
+
+      - alert: HighErrorRate
+        expr: job:api_error_rate:rate5m > 0.01
+        for: 3m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Error rate above 1% on {{ $labels.endpoint }}"
+          description: "Current error rate: {{ $value | humanizePercentage }}"
+
+      - alert: QueueBacklogHigh
+        expr: queue_backlog_size > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue backlog exceeds 100 items"
+
+      - alert: GPTCostSpike
+        expr: rate(ai_cost_usd_total[1h]) * 3600 > 50
+        for: 5m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "AI cost spike detected: ${{ $value | humanize }}/hr"
+
+      - alert: DBLockAnomaly
+        expr: pg_locks_count > 50
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Abnormal DB lock count: {{ $value }}"
+
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+
+      - alert: GPTInferenceSlowdown
+        expr: histogram_quantile(0.95, rate(gpt_inference_seconds_bucket[5m])) > 30
+        for: 3m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "GPT inference p95 > 30s — possible OpenAI degradation"
+
+      - alert: PipelineSuccessRateLow
+        expr: |
+          sum(rate(pipeline_completed_total{status="success"}[5m]))
+          / sum(rate(pipeline_completed_total[5m])) < 0.99
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pipeline success rate below SLO (99%)"

@@ -1,0 +1,26 @@
+groups:
+  - name: pipeline_recording_rules
+    interval: 30s
+    rules:
+      # p95 API latency (5-minute window)
+      - record: job:api_request_duration_seconds:p95
+        expr: histogram_quantile(0.95, sum(rate(api_request_duration_seconds_bucket[5m])) by (le, endpoint))
+
+      # p99 pipeline processing
+      - record: job:pipeline_processing_seconds:p99
+        expr: histogram_quantile(0.99, sum(rate(pipeline_processing_seconds_bucket[5m])) by (le, stage))
+
+      # Error rate per endpoint
+      - record: job:api_error_rate:rate5m
+        expr: |
+          sum(rate(api_requests_total{status=~"5.."}[5m])) by (endpoint)
+          /
+          sum(rate(api_requests_total[5m])) by (endpoint)
+
+      # Daily AI cost
+      - record: job:ai_cost_usd:daily
+        expr: sum(increase(ai_cost_usd_total[24h])) by (service, client_id)
+
+      # Queue saturation
+      - record: job:queue_saturation:ratio
+        expr: queue_backlog_size / queue_capacity_total

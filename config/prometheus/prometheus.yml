@@ -1,0 +1,52 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: ai-platform
+    environment: production
+
+rule_files:
+  - /etc/prometheus/rules/recording_rules.yml
+  - /etc/prometheus/rules/alert_rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  # Self-monitoring
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Infrastructure
+  - job_name: node-exporter
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # Database
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # OTEL Collector (application metrics forwarded here)
+  - job_name: otel-collector
+    static_configs:
+      - targets: ['otel-collector:8889']
+
+  # .NET 9 API (must expose /metrics via prometheus-net)
+  - job_name: dotnet-api
+    static_configs:
+      - targets: ['host.docker.internal:5000']
+    metrics_path: /metrics
+
+  # FastAPI service (must expose /metrics via prometheus-client)
+  - job_name: fastapi
+    static_configs:
+      - targets: ['host.docker.internal:8000']
+    metrics_path: /metrics

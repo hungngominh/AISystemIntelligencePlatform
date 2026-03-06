@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Data & DB
+ai-engine/data/
+*.db
+*.sqlite
+
+# Environment — KHÔNG commit file .env thật
+.env
+
+# Docker volumes (nếu mount local)
+prometheus_data/
+grafana_data/
+loki_data/
+tempo_data/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+dist/
+build/
+*.egg
