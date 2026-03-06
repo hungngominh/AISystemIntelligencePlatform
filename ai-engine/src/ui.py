@@ -625,8 +625,8 @@ def render_chat(server_id: int = 1) -> str:
     # IMPORTANT: <script> must come BEFORE x-data="chatApp()" so Alpine.js finds the function
     content = f"""
     <script>
-        function chatApp() {{{{
-            return {{{{
+        function chatApp() {{
+            return {{
                 sessionId: '{session_id}',
                 serverId: {server_id},
                 messages: [],
@@ -640,41 +640,41 @@ def render_chat(server_id: int = 1) -> str:
                     'Chi phí AI 1 giờ qua?',
                     'Queue backlog bao nhiêu?',
                 ],
-                init() {{{{
+                init() {{
                     const name = {server_name_js};
                     this.addMsg('assistant', 'Xin chào! Tôi đang monitor **' + name + '**. Hỏi tôi bất kỳ điều gì!');
-                }}}},
-                addMsg(role, content) {{{{
-                    this.messages.push({{{{ id: Date.now(), role, content, time: new Date().toLocaleTimeString('vi-VN') }}}});
-                    this.$nextTick(() => {{{{ const el = this.$refs.msgContainer; if(el) el.scrollTop = el.scrollHeight; }}}});
-                }}}},
-                async send(text) {{{{
+                }},
+                addMsg(role, content) {{
+                    this.messages.push({{ id: Date.now(), role, content, time: new Date().toLocaleTimeString('vi-VN') }});
+                    this.$nextTick(() => {{ const el = this.$refs.msgContainer; if(el) el.scrollTop = el.scrollHeight; }});
+                }},
+                async send(text) {{
                     const msg = (text || this.input).trim();
                     if (!msg || this.loading) return;
                     this.input = '';
                     this.addMsg('user', msg);
                     this.loading = true;
-                    try {{{{
-                        const r = await fetch('/api/chat', {{{{
+                    try {{
+                        const r = await fetch('/api/chat', {{
                             method: 'POST',
-                            headers: {{{{'Content-Type':'application/json'}}}},
-                            body: JSON.stringify({{{{ message: msg, session_id: this.sessionId, server_id: this.serverId }}}}),
-                        }}}});
+                            headers: {{'Content-Type':'application/json'}},
+                            body: JSON.stringify({{ message: msg, session_id: this.sessionId, server_id: this.serverId }}),
+                        }});
                         if (!r.ok) throw new Error('HTTP ' + r.status);
                         const d = await r.json();
                         this.addMsg('assistant', d.response);
-                    }}}} catch(e) {{{{
+                    }} catch(e) {{
                         this.addMsg('assistant', 'Lỗi kết nối: ' + e.message);
-                    }}}} finally {{{{ this.loading = false; }}}}
-                }}}},
-                clearChat() {{{{
+                    }} finally {{ this.loading = false; }}
+                }},
+                clearChat() {{
                     this.messages = [];
                     this.sessionId = Math.random().toString(36).slice(2);
                     this.init();
-                }}}},
-                renderMd(t) {{{{ try {{{{ return marked.parse(t); }}}} catch(e) {{{{ return t; }}}} }}}},
-            }}}};
-        }}}}
+                }},
+                renderMd(t) {{ try {{ return marked.parse(t); }} catch(e) {{ return t; }} }},
+            }};
+        }}
     </script>
 
     <div x-data="chatApp()" x-init="init()" class="flex flex-col" style="height: calc(100vh - 7rem)">
