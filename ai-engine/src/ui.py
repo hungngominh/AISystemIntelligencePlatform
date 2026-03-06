@@ -156,10 +156,20 @@ def render_servers() -> str:
     for s in servers:
         sid = s["id"]
         enabled_badge = (
-            '<span class="px-2 py-0.5 rounded text-xs bg-green-900 text-green-300">✅ Active</span>'
+            '<span class="px-2 py-0.5 rounded text-xs bg-green-900 text-green-300">Active</span>'
             if s.get("enabled") else
-            '<span class="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-400">⏸ Disabled</span>'
+            '<span class="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-400">Disabled</span>'
         )
+        # Use data-* attributes to safely pass values without inline JS string injection
+        data_attrs = (
+            f'data-id="{sid}" '
+            f'data-name="{s["name"].replace(chr(34), "&quot;")}" '
+            f'data-prom="{s["prometheus_url"].replace(chr(34), "&quot;")}" '
+            f'data-loki="{s["loki_url"].replace(chr(34), "&quot;")}" '
+            f'data-desc="{s.get("description","").replace(chr(34), "&quot;")}" '
+            f'data-enabled="{1 if s.get("enabled") else 0}"'
+        )
+        del_name = s["name"].replace("\\", "\\\\").replace("'", "\'")
         rows += f"""
         <tr class="border-b border-gray-700 hover:bg-gray-800/40">
             <td class="py-3 px-3 text-gray-400 text-sm">{sid}</td>
@@ -173,20 +183,20 @@ def render_servers() -> str:
             <td class="py-3 px-3">
                 <div class="flex items-center space-x-2">
                     <button onclick="pingServer({sid})" id="ping-{sid}"
-                        class="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded transition">
-                        🔍 Ping
+                        class="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded transition cursor-pointer">
+                        Ping
                     </button>
                     <a href="/?server_id={sid}"
-                        class="px-2 py-1 bg-indigo-700 hover:bg-indigo-600 text-white text-xs rounded transition">
-                        📊 Xem
+                        class="px-2 py-1 bg-indigo-700 hover:bg-indigo-600 text-white text-xs rounded transition cursor-pointer">
+                        Xem
                     </a>
-                    <button onclick="editServer({sid}, {json.dumps(s['name'])}, {json.dumps(s['prometheus_url'])}, {json.dumps(s['loki_url'])}, {json.dumps(s.get('description',''))}, {1 if s.get('enabled') else 0})"
-                        class="px-2 py-1 bg-gray-700 hover:bg-yellow-800 text-gray-300 hover:text-yellow-300 text-xs rounded transition">
-                        ✏️ Sửa
+                    <button {data_attrs} onclick="editServerFromData(this)"
+                        class="px-2 py-1 bg-gray-700 hover:bg-yellow-800 text-gray-300 hover:text-yellow-300 text-xs rounded transition cursor-pointer">
+                        Sua
                     </button>
-                    <button onclick="deleteServer({sid}, {json.dumps(s['name'])})"
-                        class="px-2 py-1 bg-gray-700 hover:bg-red-900 text-gray-300 hover:text-red-300 text-xs rounded transition">
-                        🗑
+                    <button onclick="deleteServer({sid}, '{del_name}')"
+                        class="px-2 py-1 bg-gray-700 hover:bg-red-900 text-gray-300 hover:text-red-300 text-xs rounded transition cursor-pointer">
+                        Xoa
                     </button>
                 </div>
                 <div id="ping-result-{sid}" class="text-xs mt-1"></div>
@@ -295,7 +305,13 @@ def render_servers() -> str:
             document.getElementById('f-name').focus();
         }}
 
-        function editServer(id, name, prom, loki, desc, enabled) {{
+        function editServerFromData(btn) {{
+            const id = btn.dataset.id;
+            const name = btn.dataset.name;
+            const prom = btn.dataset.prom;
+            const loki = btn.dataset.loki;
+            const desc = btn.dataset.desc;
+            const enabled = parseInt(btn.dataset.enabled);
             document.getElementById('modal-title').textContent = 'Chỉnh sửa server';
             document.getElementById('modal-server-id').value = id;
             document.getElementById('f-name').value = name;
@@ -306,6 +322,7 @@ def render_servers() -> str:
             document.getElementById('f-enabled-row').classList.remove('hidden');
             document.getElementById('modal-error').classList.add('hidden');
             document.getElementById('server-modal').classList.remove('hidden');
+            document.getElementById('f-name').focus();
         }}
 
         function closeModal() {{
@@ -371,9 +388,13 @@ def render_servers() -> str:
             }}
         }}
 
-        // Đóng modal khi click ngoài
+        // Đóng modal khi click vào backdrop (chỉ khi click đúng vào overlay, không phải card)
         document.getElementById('server-modal').addEventListener('click', function(e) {{
             if (e.target === this) closeModal();
+        }});
+        // Prevent clicks inside card from bubbling to backdrop
+        document.querySelector('#server-modal > div').addEventListener('click', function(e) {{
+            e.stopPropagation();
         }});
     </script>
     """
@@ -594,26 +615,81 @@ def render_chat(server_id: int = 1) -> str:
     servers = db.get_all_servers()
     server = db.get_server(server_id) or (servers[0] if servers else {"id": 1, "name": "Server"})
     session_id = uuid.uuid4().hex
+    server_name_js = json.dumps(server.get("name", "server"))
 
     server_options = "".join(
         f'<option value="{s["id"]}" {"selected" if s["id"] == server_id else ""}>{s["name"]}</option>'
         for s in servers
     )
 
+    # IMPORTANT: <script> must come BEFORE x-data="chatApp()" so Alpine.js finds the function
     content = f"""
+    <script>
+        function chatApp() {{{{
+            return {{{{
+                sessionId: '{session_id}',
+                serverId: {server_id},
+                messages: [],
+                input: '',
+                loading: false,
+                quickQ: [
+                    'Tóm tắt trạng thái server',
+                    'CPU và memory như thế nào?',
+                    'Có alert nào đang active không?',
+                    'Có lỗi gì trong logs gần đây?',
+                    'Chi phí AI 1 giờ qua?',
+                    'Queue backlog bao nhiêu?',
+                ],
+                init() {{{{
+                    const name = {server_name_js};
+                    this.addMsg('assistant', 'Xin chào! Tôi đang monitor **' + name + '**. Hỏi tôi bất kỳ điều gì!');
+                }}}},
+                addMsg(role, content) {{{{
+                    this.messages.push({{{{ id: Date.now(), role, content, time: new Date().toLocaleTimeString('vi-VN') }}}});
+                    this.$nextTick(() => {{{{ const el = this.$refs.msgContainer; if(el) el.scrollTop = el.scrollHeight; }}}});
+                }}}},
+                async send(text) {{{{
+                    const msg = (text || this.input).trim();
+                    if (!msg || this.loading) return;
+                    this.input = '';
+                    this.addMsg('user', msg);
+                    this.loading = true;
+                    try {{{{
+                        const r = await fetch('/api/chat', {{{{
+                            method: 'POST',
+                            headers: {{{{'Content-Type':'application/json'}}}},
+                            body: JSON.stringify({{{{ message: msg, session_id: this.sessionId, server_id: this.serverId }}}}),
+                        }}}});
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        const d = await r.json();
+                        this.addMsg('assistant', d.response);
+                    }}}} catch(e) {{{{
+                        this.addMsg('assistant', 'Lỗi kết nối: ' + e.message);
+                    }}}} finally {{{{ this.loading = false; }}}}
+                }}}},
+                clearChat() {{{{
+                    this.messages = [];
+                    this.sessionId = Math.random().toString(36).slice(2);
+                    this.init();
+                }}}},
+                renderMd(t) {{{{ try {{{{ return marked.parse(t); }}}} catch(e) {{{{ return t; }}}} }}}},
+            }}}};
+        }}}}
+    </script>
+
     <div x-data="chatApp()" x-init="init()" class="flex flex-col" style="height: calc(100vh - 7rem)">
         <div class="flex items-center justify-between mb-3">
             <div class="flex items-center space-x-3">
-                <h1 class="text-base font-semibold text-gray-200">💬 Chat với AI Monitor</h1>
-                <select id="server-select" onchange="location.href='/chat?server_id='+this.value"
-                    class="bg-gray-700 border border-gray-600 text-gray-300 text-sm rounded px-2 py-1 focus:outline-none focus:border-indigo-500">
+                <h1 class="text-base font-semibold text-gray-200">Chat với AI Monitor</h1>
+                <select onchange="location.href='/chat?server_id='+this.value"
+                    class="bg-gray-700 border border-gray-600 text-gray-300 text-sm rounded px-2 py-1 focus:outline-none focus:border-indigo-500 cursor-pointer">
                     {server_options}
                 </select>
             </div>
-            <button @click="clearChat()" class="text-gray-500 hover:text-gray-300 text-xs">🗑 Xóa chat</button>
+            <button @click="clearChat()" class="text-gray-500 hover:text-gray-300 text-xs transition cursor-pointer">Xóa chat</button>
         </div>
 
-        <div id="messages" class="flex-1 overflow-y-auto bg-gray-800 rounded-lg p-4 space-y-3 mb-3" x-ref="msgContainer">
+        <div class="flex-1 overflow-y-auto bg-gray-800 rounded-lg p-4 space-y-3 mb-3" x-ref="msgContainer">
             <template x-for="msg in messages" :key="msg.id">
                 <div :class="msg.role==='user' ? 'flex justify-end' : 'flex justify-start'">
                     <div :class="msg.role==='user'
@@ -629,8 +705,8 @@ def render_chat(server_id: int = 1) -> str:
                     <div class="bg-gray-700 px-4 py-3 rounded-2xl rounded-tl-sm">
                         <div class="flex space-x-1">
                             <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay:.1s"></div>
-                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay:.2s"></div>
+                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay:.15s"></div>
+                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay:.3s"></div>
                         </div>
                     </div>
                 </div>
@@ -639,9 +715,7 @@ def render_chat(server_id: int = 1) -> str:
 
         <div class="flex flex-wrap gap-1.5 mb-2">
             <template x-for="q in quickQ" :key="q">
-                <button @click="send(q)"
-                    class="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-400 text-xs rounded-full transition"
-                    x-text="q"></button>
+                <button @click="send(q)" class="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-400 text-xs rounded-full transition cursor-pointer" x-text="q"></button>
             </template>
         </div>
 
@@ -650,61 +724,10 @@ def render_chat(server_id: int = 1) -> str:
                 type="text" placeholder="Hỏi về server... (Enter để gửi)"
                 class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2.5 text-gray-100 placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm">
             <button @click="send()" :disabled="loading || !input.trim()"
-                class="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition">
+                class="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition cursor-pointer">
                 Gửi
             </button>
         </div>
-    </div>
+    </div>"""
 
-    <script>
-        function chatApp() {{
-            return {{
-                sessionId: '{session_id}',
-                serverId: {server_id},
-                messages: [],
-                input: '',
-                loading: false,
-                quickQ: [
-                    'Tóm tắt trạng thái server',
-                    'CPU và memory như thế nào?',
-                    'Có alert nào đang active không?',
-                    'Có lỗi gì trong logs gần đây?',
-                    'Chi phí AI 1 giờ qua?',
-                    'Queue backlog bao nhiêu?',
-                ],
-                init() {{
-                    this.addMsg('assistant', '👋 Xin chào! Tôi đang monitor **{server.get("name", "server")}**. Hỏi tôi bất kỳ điều gì về server này!');
-                }},
-                addMsg(role, content) {{
-                    this.messages.push({{ id: Date.now(), role, content, time: new Date().toLocaleTimeString('vi-VN') }});
-                    this.$nextTick(() => {{ const el = this.$refs.msgContainer; if(el) el.scrollTop = el.scrollHeight; }});
-                }},
-                async send(text) {{
-                    const msg = (text || this.input).trim();
-                    if (!msg || this.loading) return;
-                    this.input = '';
-                    this.addMsg('user', msg);
-                    this.loading = true;
-                    try {{
-                        const r = await fetch('/api/chat', {{
-                            method: 'POST',
-                            headers: {{'Content-Type':'application/json'}},
-                            body: JSON.stringify({{ message: msg, session_id: this.sessionId, server_id: this.serverId }}),
-                        }});
-                        const d = await r.json();
-                        this.addMsg('assistant', d.response);
-                    }} catch(e) {{
-                        this.addMsg('assistant', '❌ Lỗi kết nối: ' + e.message);
-                    }} finally {{ this.loading = false; }}
-                }},
-                clearChat() {{
-                    this.messages = [];
-                    this.sessionId = Math.random().toString(36).slice(2);
-                    this.init();
-                }},
-                renderMd(t) {{ return marked.parse(t); }},
-            }};
-        }}
-    </script>"""
-
-    return _base_layout(f"Chat — {server.get('name','')}", content, "chat")
+    return _base_layout(f"Chat — {{server.get('name','')}}", content, "chat")
