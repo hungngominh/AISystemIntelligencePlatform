@@ -1,48 +1,77 @@
 """
 AI Engine - Analyzer
-Gửi metrics đến Claude API để phân tích và trả về báo cáo
+Gửi metrics đến Claude để phân tích.
+
+Backend tự động chọn:
+- Nếu ANTHROPIC_BASE_URL set → dùng httpx trực tiếp với /v1/chat/completions
+  (tương thích Claudible proxy tại http://192.168.0.101:8000)
+  Auth: ANTHROPIC_AUTH_TOKEN (sk-...) làm Bearer token
+- Nếu ANTHROPIC_API_KEY set → dùng anthropic SDK trực tiếp
 """
 import json
 import logging
+import httpx
 from typing import Optional
-
-import anthropic
 
 from src.config import settings
 
 logger = logging.getLogger(__name__)
 
+_USE_PROXY = bool(settings.anthropic_base_url)
 
-def _build_client() -> anthropic.Anthropic:
-    """
-    Khởi tạo Anthropic client linh hoạt:
-    - Nếu có ANTHROPIC_BASE_URL → dùng proxy (ví dụ: http://192.168.0.101:8000)
-    - Nếu không có → dùng Anthropic trực tiếp với API key
-    - Nếu có cả hai → ưu tiên base_url (proxy)
-    """
-    kwargs = {}
+if _USE_PROXY:
+    _PROXY_URL = settings.anthropic_base_url.rstrip("/") + "/v1/chat/completions"
+    _PROXY_TOKEN = settings.anthropic_auth_token or ""
+    logger.info(f"Analyzer: dùng proxy → {settings.anthropic_base_url}")
+else:
+    import anthropic as _anthropic_module
+    _anthropic_client = _anthropic_module.Anthropic(api_key=settings.anthropic_api_key)
+    logger.info("Analyzer: dùng Anthropic API trực tiếp")
 
-    if settings.anthropic_base_url:
-        kwargs["base_url"] = settings.anthropic_base_url
-        # Proxy thường không cần key thật, nhưng SDK bắt buộc có giá trị
-        kwargs["api_key"] = settings.anthropic_api_key or "proxy-no-key-needed"
-        logger.info(f"Dùng Anthropic proxy: {settings.anthropic_base_url}")
+
+# ── Call AI (unified) ─────────────────────────────────────────
+
+def _call_ai(system: str, messages: list[dict], max_tokens: int = 1024) -> tuple[str, int]:
+    """
+    Gọi AI, trả về (content, tokens_used).
+    """
+    if _USE_PROXY:
+        msgs = [{"role": "system", "content": system}] + messages
+        resp = httpx.post(
+            _PROXY_URL,
+            headers={
+                "Content-Type": "application/json",
+                "Accept-Encoding": "identity",
+                "Authorization": f"Bearer {_PROXY_TOKEN}",
+            },
+            json={
+                "model": settings.claude_model,
+                "max_tokens": max_tokens,
+                "messages": msgs,
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        usage = data.get("usage", {})
+        tokens = (usage.get("prompt_tokens") or 0) + (usage.get("completion_tokens") or 0)
+        return content, tokens
     else:
-        kwargs["api_key"] = settings.anthropic_api_key
-        logger.info("Dùng Anthropic API trực tiếp")
+        response = _anthropic_client.messages.create(
+            model=settings.claude_model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=messages,
+        )
+        content = response.content[0].text
+        tokens = response.usage.input_tokens + response.usage.output_tokens
+        return content, tokens
 
-    return anthropic.Anthropic(**kwargs)
 
-
-client = _build_client()
-
+# ── System prompt ─────────────────────────────────────────────
 
 SYSTEM_PROMPT = """Bạn là một AI chuyên gia hệ thống (SRE/DevOps AI) được giao nhiệm vụ giám sát và phân tích trạng thái server.
-
-Hệ thống đang monitor gồm:
-- AIProjectMiddleware (.NET 9 Web API + PostgreSQL)
-- multiAIAgents (Python CrewAI, GPT inference)
-- Infrastructure: Docker containers trên Linux/Windows
 
 Nguyên tắc phân tích:
 1. Luôn đưa ra đánh giá rõ ràng: OK / WARNING / CRITICAL
@@ -54,8 +83,17 @@ Nguyên tắc phân tích:
 Format output: Markdown với các section: ## Tổng quan, ## Vấn đề phát hiện, ## Đề xuất action"""
 
 
+# ── Helpers ───────────────────────────────────────────────────
+
+def _fmt_pct(val) -> str:
+    return "N/A" if val is None else f"{val:.1f}"
+
+
+def _fmt_val(val) -> str:
+    return "N/A" if val is None else f"{val:.3f}"
+
+
 def _format_metrics_for_prompt(metrics: dict) -> str:
-    """Chuyển metrics dict thành text dễ đọc cho LLM."""
     lines = [f"**Thời điểm thu thập**: {metrics.get('collected_at', 'N/A')}", ""]
 
     infra = metrics.get("infrastructure", {})
@@ -105,21 +143,23 @@ def _format_metrics_for_prompt(metrics: dict) -> str:
     targets = metrics.get("targets", [])
     lines.append("### Scrape Targets")
     for t in targets:
-        status = "✅" if t.get("health") == "up" else "❌"
-        lines.append(f"- {status} {t.get('job')} ({t.get('instance')}) — {t.get('lastError') or 'OK'}")
+        icon = "✅" if t.get("health") == "up" else "❌"
+        lines.append(f"- {icon} {t.get('job')} ({t.get('instance')}) — {t.get('lastError') or 'OK'}")
+    if not targets:
+        lines.append("- Không có dữ liệu scrape targets")
     lines.append("")
 
     active_alerts = metrics.get("active_alerts", [])
     lines.append(f"### Active Alerts ({len(active_alerts)} alerts)")
     for a in active_alerts:
-        labels = a.get("labels", {})
-        lines.append(f"- [{labels.get('severity','?').upper()}] {labels.get('alertname','?')}: {a.get('annotations',{}).get('summary','')}")
+        lbl = a.get("labels", {})
+        lines.append(f"- [{lbl.get('severity','?').upper()}] {lbl.get('alertname','?')}: {a.get('annotations',{}).get('summary','')}")
     lines.append("")
 
     logs = metrics.get("logs", {})
     errors = logs.get("recent_errors", [])
     lines.append(f"### Recent Errors (15 phút gần đây — {len(errors)} dòng)")
-    for err in errors[:10]:  # Giới hạn 10 dòng
+    for err in errors[:10]:
         lines.append(f"  > {err[:200]}")
     if len(errors) > 10:
         lines.append(f"  ... và {len(errors) - 10} dòng khác")
@@ -134,25 +174,10 @@ def _format_metrics_for_prompt(metrics: dict) -> str:
     return "\n".join(lines)
 
 
-def _fmt_pct(val) -> str:
-    if val is None:
-        return "N/A"
-    return f"{val:.1f}"
-
-
-def _fmt_val(val) -> str:
-    if val is None:
-        return "N/A"
-    return f"{val:.3f}"
-
+# ── Public API ────────────────────────────────────────────────
 
 def analyze_metrics(metrics: dict, server_name: str = "Server") -> dict:
-    """
-    Phân tích metrics bằng Claude.
-    Trả về: {"status": str, "summary": str, "report": str, "tokens": int}
-    """
     metrics_text = _format_metrics_for_prompt(metrics)
-
     prompt = f"""Phân tích trạng thái server **{server_name}** dựa trên data sau:
 
 {metrics_text}
@@ -165,49 +190,19 @@ Hãy:
 Bắt đầu response bằng một dòng: STATUS: OK | STATUS: WARNING | STATUS: CRITICAL"""
 
     try:
-        response = client.messages.create(
-            model=settings.claude_model,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        content = response.content[0].text
-        tokens = response.usage.input_tokens + response.usage.output_tokens
-
-        # Parse status từ dòng đầu
-        status = "ok"
+        content, tokens = _call_ai(SYSTEM_PROMPT, [{"role": "user", "content": prompt}], max_tokens=1024)
         lines = content.strip().split("\n")
         first_line = lines[0].upper()
-        if "CRITICAL" in first_line:
-            status = "critical"
-        elif "WARNING" in first_line:
-            status = "warning"
-
-        # Summary = dòng đầu tiên có nội dung thực (sau STATUS line)
+        status = "critical" if "CRITICAL" in first_line else "warning" if "WARNING" in first_line else "ok"
         summary = next((l for l in lines[1:] if l.strip()), content[:100])
-
-        return {
-            "status": status,
-            "summary": summary.strip("# ").strip(),
-            "report": content,
-            "tokens": tokens,
-        }
+        return {"status": status, "summary": summary.strip("# ").strip(), "report": content, "tokens": tokens}
     except Exception as e:
         logger.error(f"Claude API error: {e}")
-        return {
-            "status": "error",
-            "summary": f"Không thể phân tích: {e}",
-            "report": f"**Lỗi khi gọi Claude API**: {e}",
-            "tokens": 0,
-        }
+        return {"status": "error", "summary": f"Không thể phân tích: {e}", "report": f"**Lỗi**: {e}", "tokens": 0}
 
 
 def analyze_alert(alert_name: str, alert_labels: dict, alert_annotations: dict, metrics: dict) -> dict:
-    """
-    Phân tích sâu một alert cụ thể.
-    """
     metrics_text = _format_metrics_for_prompt(metrics)
-
     prompt = f"""Một alert vừa được kích hoạt:
 
 **Alert**: {alert_name}
@@ -228,60 +223,25 @@ Phân tích:
 Bắt đầu bằng: STATUS: CRITICAL hoặc STATUS: WARNING"""
 
     try:
-        response = client.messages.create(
-            model=settings.claude_model,
-            max_tokens=1500,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        content = response.content[0].text
-        tokens = response.usage.input_tokens + response.usage.output_tokens
+        content, tokens = _call_ai(SYSTEM_PROMPT, [{"role": "user", "content": prompt}], max_tokens=1500)
         lines = content.strip().split("\n")
-        first_line = lines[0].upper()
-        status = "warning"
-        if "CRITICAL" in first_line:
-            status = "critical"
-
-        return {
-            "status": status,
-            "summary": f"Alert: {alert_name}",
-            "report": content,
-            "tokens": tokens,
-        }
+        status = "critical" if "CRITICAL" in lines[0].upper() else "warning"
+        return {"status": status, "summary": f"Alert: {alert_name}", "report": content, "tokens": tokens}
     except Exception as e:
-        logger.error(f"Claude API alert analysis error: {e}")
-        return {
-            "status": "error",
-            "summary": f"Alert analysis failed: {e}",
-            "report": str(e),
-            "tokens": 0,
-        }
+        logger.error(f"Claude API alert error: {e}")
+        return {"status": "error", "summary": f"Alert analysis failed: {e}", "report": str(e), "tokens": 0}
 
 
 def chat_with_context(user_message: str, chat_history: list[dict], metrics_snapshot: Optional[dict] = None) -> dict:
-    """
-    Chat với AI về server. Có context metrics gần nhất.
-    """
     system = SYSTEM_PROMPT
     if metrics_snapshot:
-        metrics_text = _format_metrics_for_prompt(metrics_snapshot)
-        system += f"\n\n---\n**Snapshot metrics gần nhất**:\n{metrics_text}"
+        system += f"\n\n---\n**Snapshot metrics gần nhất**:\n{_format_metrics_for_prompt(metrics_snapshot)}"
 
-    # Build message history
-    messages = []
-    for msg in chat_history[-10:]:  # Giới hạn 10 messages gần nhất
-        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages = [{"role": m["role"], "content": m["content"]} for m in chat_history[-10:]]
     messages.append({"role": "user", "content": user_message})
 
     try:
-        response = client.messages.create(
-            model=settings.claude_model,
-            max_tokens=1024,
-            system=system,
-            messages=messages,
-        )
-        content = response.content[0].text
-        tokens = response.usage.input_tokens + response.usage.output_tokens
+        content, tokens = _call_ai(system, messages, max_tokens=1024)
         return {"content": content, "tokens": tokens}
     except Exception as e:
         logger.error(f"Claude chat error: {e}")

@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: Optional[str] = Field(None, env="ANTHROPIC_API_KEY")
     anthropic_base_url: Optional[str] = Field(None, env="ANTHROPIC_BASE_URL")
+    anthropic_auth_token: Optional[str] = Field(None, env="ANTHROPIC_AUTH_TOKEN")
     claude_model: str = Field("claude-sonnet-4-6", env="CLAUDE_MODEL")
 
     # Default server (dùng để seed DB lần đầu, và cho AlertManager webhook)
