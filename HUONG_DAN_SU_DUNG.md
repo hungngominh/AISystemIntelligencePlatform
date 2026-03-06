@@ -1,150 +1,252 @@
-# AI System Intelligence Platform — Hướng dẫn sử dụng
+# AI System Intelligence Platform — Hướng dẫn sử dụng chi tiết
 
 > **Phiên bản**: 2.0.0 | **Cập nhật**: 2026-03-06
 
 ---
 
-## Hiểu nhanh: Hệ thống gồm 2 phần
+## Hiểu nhanh hệ thống
+
+Hệ thống gồm **2 phần**, **đều chạy trên cùng một server** bằng Docker:
 
 ```
-┌─────────────────────────┐        ┌──────────────────────────┐
-│   SERVER CẦN MONITOR    │        │      MÁY CỦA BẠN         │
-│  (222.253.80.38)        │◄──────►│  (máy tính cá nhân)      │
-│                         │        │                          │
-│  • Prometheus :9090     │        │  • AI Engine chạy ở đây  │
-│  • Loki :3100           │        │  • Mở browser xem UI     │
-│  • Grafana :3000        │        │  • http://localhost:33898 │
-│  • Ứng dụng của bạn     │        │                          │
-└─────────────────────────┘        └──────────────────────────┘
-         ↑ Thu thập metrics                  ↑ Phân tích AI
+[Server 192.168.0.39]                    [Trình duyệt của bạn]
+  docker compose up -d
+  ├── prometheus    :9090   <──────────>  http://192.168.0.39:33898
+  ├── loki          :3100                 (AI Monitor Dashboard)
+  ├── grafana       :3000
+  ├── alertmanager  :9093
+  ├── node-exporter :9100                 http://192.168.0.39:3000
+  ├── cadvisor      :8080                 (Grafana)
+  └── ai-engine     :33898
 ```
 
-**Nguyên lý hoạt động:**
-- **Server** chạy Prometheus/Loki để thu thập metrics và logs từ ứng dụng
-- **AI Engine** (chạy cùng server hoặc máy khác) đọc data từ Prometheus/Loki → gửi cho Claude phân tích → hiển thị kết quả lên Web UI
+**Nguyên lý:**
+- `prometheus` + `loki` thu thập metrics/logs của chính server đó
+- `ai-engine` đọc data từ prometheus/loki nội bộ → gửi Claude phân tích → hiển thị Web UI
+- Bạn mở browser trên **bất kỳ máy nào trong cùng mạng** để xem dashboard
 
 ---
 
-## PHẦN 1 — SERVER CẦN LÀM GÌ?
+## PHẦN 1 — CÀI ĐẶT TRÊN SERVER (192.168.0.39)
 
-Server của bạn cần chạy **Observability Stack** (Prometheus, Loki, Grafana...) để thu thập dữ liệu.
+> Làm **một lần duy nhất**. Sau đó chỉ cần `docker compose up -d` mỗi khi restart server.
 
-### Bước 1.1 — Yêu cầu
+### Bước 1.1 — Yêu cầu server
 
-| Yêu cầu | Kiểm tra |
-|---------|---------|
-| Docker + Docker Compose | `docker --version` |
-| Port 9090 (Prometheus) mở | Firewall hoặc VPS panel |
-| Port 3100 (Loki) mở | Firewall hoặc VPS panel |
-| Ứng dụng đang chạy | `.NET API` hoặc `Python FastAPI` |
+| Yêu cầu | Lệnh kiểm tra | Tối thiểu |
+|---------|--------------|-----------|
+| OS | `cat /etc/os-release` | Ubuntu 20.04+ / Debian 11+ |
+| Docker Engine | `docker --version` | 24.0+ |
+| Docker Compose v2 | `docker compose version` | 2.20+ |
+| RAM | `free -h` | 4 GB |
+| Disk trống | `df -h /` | 20 GB |
 
-### Bước 1.2 — Deploy Observability Stack lên server
+**Cài Docker nếu chưa có (Ubuntu/Debian):**
+```bash
+curl -fsSL https://get.docker.com | bash
+sudo usermod -aG docker $USER
+newgrp docker
+docker --version       # Kết quả: Docker version 24.x.x
+docker compose version # Kết quả: Docker Compose version v2.x.x
+```
+
+### Bước 1.2 — Clone project lên server
 
 ```bash
 # SSH vào server
-ssh user@222.253.80.38 -p 33898
+ssh user@192.168.0.39
 
-# Clone/copy project lên server
-git clone <your-repo> AISystemIntelligencePlatform
+# Clone project (lần đầu)
+git clone https://github.com/hungngominh/AISystemIntelligencePlatform.git
 cd AISystemIntelligencePlatform
+```
 
-# Chỉnh sửa .env (điền thông tin PostgreSQL của bạn)
+Nếu đã có project rồi, pull code mới nhất:
+```bash
+cd AISystemIntelligencePlatform
+git pull origin main
+```
+
+### Bước 1.3 — Tạo file .env trên server
+
+File `.env` phải nằm ở **thư mục gốc** (cùng cấp với `docker-compose.yml`):
+
+```bash
 nano .env
 ```
 
-Nội dung `.env` trên server — **chỉ cần phần này**, không cần ANTHROPIC_API_KEY:
+Dán nội dung sau, **chỉnh sửa các giá trị theo thực tế**:
+
 ```env
+# ── PostgreSQL (để trống cả 4 dòng nếu không dùng postgres-exporter) ──
 POSTGRES_USER=postgres
-POSTGRES_PASSWORD=your_password
-POSTGRES_HOST=host.docker.internal
+POSTGRES_PASSWORD=your_db_password
+POSTGRES_HOST=192.168.0.39
 POSTGRES_DB=your_db_name
+
+# ── AI — chọn MỘT trong hai cách ──────────────────────────────────────
+# Cách 1: Proxy Claudible (nếu proxy đang chạy tại 192.168.0.101:8000)
+ANTHROPIC_BASE_URL=http://192.168.0.101:8000
+
+# Cách 2: Anthropic API key trực tiếp
+# (xoá dòng ANTHROPIC_BASE_URL trên, bỏ comment dòng dưới)
+# ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxxx
+
+# ── Model Claude ────────────────────────────────────────────────────────
+CLAUDE_MODEL=claude-sonnet-4-6
+
+# ── Đăng nhập vào AI Monitor ────────────────────────────────────────────
+AUTH_USERNAME=admin
+AUTH_PASSWORD=@ISystemInt3llig3nc3Platf()rm
+AUTH_SECRET_KEY=change-me-in-production-32chars!!
+AUTH_SESSION_MAX_AGE=28800
+
+# ── Thông báo Google Chat (để trống nếu chưa dùng) ──────────────────────
+GOOGLE_CHAT_WEBHOOK_URL=
+
+# ── Cài đặt khác ────────────────────────────────────────────────────────
+ANALYSIS_INTERVAL_SECONDS=300
+LOG_LEVEL=INFO
 ```
 
-```bash
-# Khởi động stack (KHÔNG bao gồm ai-engine)
-docker compose up -d prometheus grafana loki tempo alertmanager \
-    otel-collector node-exporter postgres-exporter cadvisor
+Lưu: `Ctrl+O` → `Enter` → `Ctrl+X`
 
-# Kiểm tra đã chạy chưa
+### Bước 1.4 — Khởi động tất cả services
+
+```bash
+# Phải đứng trong thư mục AISystemIntelligencePlatform
+docker compose up -d --build
+```
+
+Lần đầu mất **3–5 phút** pull Docker images. Các lần sau chỉ vài giây.
+
+Kiểm tra sau khi start:
+```bash
 docker compose ps
 ```
 
-### Bước 1.3 — Kiểm tra server sẵn sàng
+Kết quả mong đợi — tất cả `STATUS` phải là `Up`:
+```
+NAME                STATUS
+prometheus          Up
+loki                Up
+grafana             Up
+alertmanager        Up
+otel-collector      Up
+node-exporter       Up
+cadvisor            Up
+ai-engine           Up
+```
 
-Truy cập từ trình duyệt (hoặc dùng curl):
+> **`postgres-exporter` bị Exit** nếu chưa cấu hình PostgreSQL — **không sao**, các service khác không bị ảnh hưởng.
+
+### Bước 1.5 — Xác nhận hoạt động
+
+Chạy ngay trên server:
+```bash
+curl http://localhost:9090/-/healthy   # Prometheus
+curl http://localhost:3100/ready       # Loki
+curl http://localhost:33898/health     # AI Engine
+```
+
+Chạy từ máy bạn (cùng mạng LAN):
+```bash
+curl http://192.168.0.39:9090/-/healthy
+curl http://192.168.0.39:33898/health
+```
+
+Kết quả mong đợi:
+- Prometheus → `Prometheus Server is Healthy.`
+- Loki → `ready`
+- AI Engine → `{"status":"ok","timestamp":"..."}`
+
+### Bước 1.6 — Theo dõi log AI Engine
 
 ```bash
-# Prometheus đang chạy?
-curl http://222.253.80.38:9090/-/healthy
-# Kết quả mong đợi: "Prometheus Server is Healthy."
-
-# Loki đang chạy?
-curl http://222.253.80.38:3100/ready
-# Kết quả mong đợi: "ready"
+docker compose logs ai-engine -f
 ```
 
-> ✅ Nếu trả về kết quả trên → **Server đã sẵn sàng**
-
-### Bước 1.4 — Instrument ứng dụng của bạn (để có metrics)
-
-Nếu ứng dụng chưa gửi metrics thì Prometheus chỉ monitor được infrastructure (CPU, RAM, Disk). Để monitor ứng dụng sâu hơn, thêm OTEL:
-
-**Python (FastAPI):**
-```python
-# Xem file: instrumentation/python/telemetry.py
-from instrumentation.python.telemetry import setup_telemetry
-tracer, meter = setup_telemetry(app)
+Log khởi động bình thường:
+```
+INFO  AI System Intelligence Platform starting...
+INFO     Prometheus: http://prometheus:9090
+INFO     Loki:       http://loki:3100
+INFO     Port:       8765
+INFO     Model:      claude-sonnet-4-6
+INFO  Analyzer: dùng OpenAI-compatible proxy → http://192.168.0.101:8000
+INFO  DB initialized. Default Server seeded.
+INFO  Scheduler started. Sync interval: 60s
+INFO  Added job for server_id=1 (Default Server)
 ```
 
-**.NET 9:**
-```csharp
-// Xem file: instrumentation/dotnet/ObservabilityExtensions.cs
-builder.Services.AddObservability(builder.Configuration, "YourAppName");
+Log phân tích định kỳ (mỗi 5 phút):
+```
+INFO  [server_id=1] Collecting metrics from prometheus...
+INFO  [server_id=1] Analysis done: status=ok tokens=854
 ```
 
-> ⚠️ **Nếu bỏ qua bước này:** AI vẫn phân tích được CPU, RAM, Disk, Logs cơ bản — nhưng không có metrics ứng dụng (API latency, error rate, queue...).
+Khi thấy `Analysis done` → **hệ thống đang hoạt động đúng**.
 
 ---
 
-## PHẦN 2 — MÁY CỦA BẠN CẦN LÀM GÌ?
+## PHẦN 2 — TRUY CẬP WEB UI
 
-Máy của bạn chạy **AI Engine** — đây là phần duy nhất cần Anthropic API / proxy URL.
+Sau khi server đã start, mở trình duyệt:
 
-### Bước 2.1 — Yêu cầu
+```
+http://192.168.0.39:33898
+```
+
+Đăng nhập:
+- **Username**: `admin`
+- **Password**: `@ISystemInt3llig3nc3Platf()rm`
+
+### Tất cả URL hữu ích
+
+| Service | URL | Tài khoản |
+|---------|-----|-----------|
+| **AI Monitor** (dùng hàng ngày) | `http://192.168.0.39:33898` | admin / @ISystemInt3llig3nc3Platf()rm |
+| Grafana (đồ thị chi tiết) | `http://192.168.0.39:3000` | admin / admin123 |
+| Prometheus (query trực tiếp) | `http://192.168.0.39:9090` | Không cần login |
+| Prometheus Targets | `http://192.168.0.39:9090/targets` | Xem trạng thái scrape |
+| AlertManager | `http://192.168.0.39:9093` | Không cần login |
+| cAdvisor (container metrics) | `http://192.168.0.39:8080` | Không cần login |
+
+---
+
+## PHẦN 3 — CHẠY AI ENGINE TRÊN MÁY CỦA BẠN (tùy chọn)
+
+> Dùng khi: dev/debug, hoặc muốn chạy AI Engine riêng trỏ đến server.
+> **Server vẫn phải chạy Prometheus + Loki.**
+
+### Bước 3.1 — Yêu cầu
 
 | Yêu cầu | Kiểm tra |
 |---------|---------|
 | Python 3.10+ | `python --version` |
-| Kết nối được đến server | `curl http://222.253.80.38:9090/-/healthy` |
-| Proxy URL hoặc Anthropic API Key | Xem mục cấu hình |
+| Kết nối đến server | `curl http://192.168.0.39:9090/-/healthy` |
 
-### Bước 2.2 — Cấu hình
-
-Mở file `ai-engine/.env` (copy từ `ai-engine/.env.example` nếu chưa có):
+### Bước 3.2 — Cấu hình ai-engine/.env
 
 ```env
-# ── Chọn MỘT trong hai cách kết nối AI ──────────────────────
-
-# CÁCH 1: Dùng proxy URL của bạn (đang cấu hình)
 ANTHROPIC_BASE_URL=http://192.168.0.101:8000
-
-# CÁCH 2: Dùng Anthropic API trực tiếp
-# ANTHROPIC_API_KEY=sk-ant-...
-
-# ── Server mặc định (server đầu tiên trong DB) ───────────────
-PROMETHEUS_URL=http://222.253.80.38:9090
-LOKI_URL=http://222.253.80.38:3100
-
-# ── Cài đặt khác ─────────────────────────────────────────────
 CLAUDE_MODEL=claude-sonnet-4-6
+PROMETHEUS_URL=http://192.168.0.39:9090
+LOKI_URL=http://192.168.0.39:3100
+ALERTMANAGER_URL=http://192.168.0.39:9093
+AI_ENGINE_HOST=0.0.0.0
+AI_ENGINE_PORT=8765
 ANALYSIS_INTERVAL_SECONDS=300
-GOOGLE_CHAT_WEBHOOK_URL=https://chat.googleapis.com/v1/spaces/...
+DB_PATH=./data/ai_engine.db
 AUTH_USERNAME=admin
 AUTH_PASSWORD=@ISystemInt3llig3nc3Platf()rm
 AUTH_SECRET_KEY=change-me-in-production-32chars!!
+AUTH_SESSION_MAX_AGE=28800
+GOOGLE_CHAT_WEBHOOK_URL=
+LOG_LEVEL=INFO
 ```
 
-### Bước 2.3 — Khởi động AI Engine
+### Bước 3.3 — Khởi động
 
 **Windows:**
 ```cmd
@@ -152,30 +254,20 @@ cd D:\Work\AISystemIntelligencePlatform\ai-engine
 start.bat
 ```
 
-**Linux / macOS:**
+**Linux/macOS:**
 ```bash
 cd /path/to/AISystemIntelligencePlatform/ai-engine
 chmod +x start.sh
 ./start.sh
 ```
 
-Script tự động:
-1. Kiểm tra Python
-2. Tạo virtual environment
-3. Cài đặt dependencies
-4. Khởi động server tại port 8765
+Script tự động: tạo venv → cài packages → khởi động tại port 8765.
 
-### Bước 2.4 — Mở giao diện
-
-Mở trình duyệt: **http://localhost:33898**
-
-Đăng nhập:
-- Username: `admin`
-- Password: `@ISystemInt3llig3nc3Platf()rm`
+Mở trình duyệt: **`http://localhost:8765`**
 
 ---
 
-## PHẦN 3 — SỬ DỤNG HÀNG NGÀY
+## PHẦN 4 — SỬ DỤNG HÀNG NGÀY
 
 ### Dashboard chính
 
@@ -255,123 +347,183 @@ Click vào bất kỳ dòng phân tích nào → trang chi tiết:
 
 ---
 
-## PHẦN 4 — NHẬN THÔNG BÁO GOOGLE CHAT
+## PHẦN 5 — NHẬN THÔNG BÁO GOOGLE CHAT
 
-Khi có WARNING hoặc CRITICAL, hệ thống tự gửi thông báo vào Google Chat.
+Khi AI phát hiện WARNING hoặc CRITICAL → tự động gửi vào Google Chat.
 
-### Tạo webhook
+### Tạo Webhook
 
-1. Mở **Google Chat** → vào Space nhóm của bạn
-2. Click tên Space → **Manage webhooks**
-3. Click **Add webhook** → đặt tên `AI Monitor` → **Save**
-4. Copy URL (dạng `https://chat.googleapis.com/v1/spaces/...`)
+1. Google Chat → Space (nhóm) muốn nhận thông báo
+2. Click tên Space → **Apps & integrations** → **Webhooks**
+3. **Add webhook** → tên `AI Monitor` → **Save** → Copy URL
 
 ### Cấu hình
 
-Điền vào `ai-engine/.env`:
+Điền vào `.env` (trên server):
 ```env
-GOOGLE_CHAT_WEBHOOK_URL=https://chat.googleapis.com/v1/spaces/XXX/messages?key=...
+GOOGLE_CHAT_WEBHOOK_URL=https://chat.googleapis.com/v1/spaces/XXXXX/messages?key=...&token=...
 ```
 
-Khởi động lại AI Engine. Test thử:
+Restart AI Engine:
 ```bash
-curl -X POST http://localhost:33898/api/notifications/test
+docker compose restart ai-engine
+```
+
+Test gửi thông báo:
+```bash
+curl -X POST http://192.168.0.39:33898/api/notifications/test
 ```
 
 ---
 
-## PHẦN 5 — THAY ĐỔI CẤU HÌNH
+## PHẦN 6 — THAY ĐỔI CẤU HÌNH
+
+Sau mỗi thay đổi `.env` trên server, restart AI Engine:
+```bash
+docker compose restart ai-engine
+```
 
 ### Đổi mật khẩu đăng nhập
 
-Sửa `ai-engine/.env`:
 ```env
 AUTH_USERNAME=admin
 AUTH_PASSWORD=mật_khẩu_mới
 ```
-Khởi động lại AI Engine.
 
 ### Đổi tần suất phân tích
 
 ```env
-ANALYSIS_INTERVAL_SECONDS=300   # 5 phút (mặc định)
-ANALYSIS_INTERVAL_SECONDS=600   # 10 phút
-ANALYSIS_INTERVAL_SECONDS=60    # 1 phút (tốn nhiều API token hơn)
+ANALYSIS_INTERVAL_SECONDS=60    # 1 phút — debug, tốn nhiều token
+ANALYSIS_INTERVAL_SECONDS=300   # 5 phút — mặc định, khuyên dùng
+ANALYSIS_INTERVAL_SECONDS=900   # 15 phút — tiết kiệm token
 ```
 
 ### Đổi model Claude
 
 ```env
-CLAUDE_MODEL=claude-haiku-4-5-20251001   # Nhanh, rẻ
+CLAUDE_MODEL=claude-haiku-4-5-20251001   # Nhanh, ít token, kém chính xác hơn
 CLAUDE_MODEL=claude-sonnet-4-6           # Cân bằng (mặc định)
-CLAUDE_MODEL=claude-opus-4-6             # Chất lượng cao nhất
+CLAUDE_MODEL=claude-opus-4-6             # Chất lượng cao nhất, nhiều token nhất
 ```
 
 ---
 
-## PHẦN 6 — XỬ LÝ SỰ CỐ
+## PHẦN 7 — XỬ LÝ SỰ CỐ
 
-### AI Engine không kết nối được server
+### Vấn đề 1: "Không có dữ liệu" / UNKNOWN
 
+**90% nguyên nhân: server chưa start docker-compose.**
+
+Kiểm tra kết nối từ máy bạn:
 ```bash
-# Kiểm tra từ máy của bạn
-curl http://222.253.80.38:9090/-/healthy
-# Nếu không trả về → port 9090 chưa mở trên server
+curl http://192.168.0.39:9090/-/healthy
+```
+- Không phản hồi → SSH vào server, start lại docker-compose
+- Phản hồi OK → xem tiếp log AI Engine
 
-# Mở port trên server (Ubuntu/Debian)
-sudo ufw allow 9090
-sudo ufw allow 3100
+SSH vào server kiểm tra:
+```bash
+ssh user@192.168.0.39
+cd AISystemIntelligencePlatform
+
+docker compose ps                    # Xem service nào Down
+docker compose up -d                 # Start service bị Down
+docker compose logs ai-engine --tail=50  # Tìm lỗi cụ thể
 ```
 
-### AI trả lời "không có dữ liệu"
+Prometheus đang chạy nhưng không có data:
+- Mở `http://192.168.0.39:9090/targets` trong browser
+- Target màu đỏ (DOWN) → exporter đó chưa chạy
 
-Nguyên nhân: Prometheus chưa scrape được ứng dụng.
+### Vấn đề 2: AI Engine log lỗi kết nối
 
 ```bash
-# Kiểm tra Prometheus targets
-curl http://222.253.80.38:9090/api/v1/targets
-
-# Tìm targets có "health": "down"
-# → Kiểm tra ứng dụng có expose /metrics chưa
+docker compose logs ai-engine 2>&1 | grep -iE "error|fail|refuse"
 ```
 
-### AI Engine không start
+| Lỗi trong log | Nguyên nhân | Cách fix |
+|--------------|------------|---------|
+| `Connection refused prometheus:9090` | Prometheus chưa chạy | `docker compose restart prometheus` |
+| `Connection refused loki:3100` | Loki chưa chạy | `docker compose restart loki` |
+| `Claude API error: Connection refused` | Proxy Claudible chưa start | Start proxy tại máy 192.168.0.101 |
+| `Invalid API key` | Claudible từ chối source IP | Kiểm tra `http://192.168.0.101:8000/__dashboard__` |
+
+### Vấn đề 3: AI Engine không start — lỗi config
 
 ```bash
-# Xem lỗi chi tiết
-python main.py
-
-# Lỗi thường gặp:
-# "Phải cấu hình ít nhất một trong hai..."
-#   → Chưa set ANTHROPIC_BASE_URL hoặc ANTHROPIC_API_KEY trong .env
-
-# "Connection refused"
-#   → PROMETHEUS_URL sai hoặc server chưa chạy
+docker compose logs ai-engine | head -30
 ```
 
-### Xem logs chi tiết
+| Lỗi | Nguyên nhân | Cách fix |
+|-----|------------|---------|
+| `Phải cấu hình ít nhất một trong hai...` | Thiếu ANTHROPIC_BASE_URL/API_KEY | Thêm vào `.env` |
+| `EnvSettingsError` | Ký tự lạ trong `.env` | Tạo lại file `.env` từ đầu |
+| `Port already in use` | Port 8765 bị chiếm | Đổi `AI_ENGINE_PORT` trong `.env` |
+
+### Vấn đề 4: Proxy Claudible lỗi
+
+Proxy tại `192.168.0.101:8000` xác thực bằng **source IP**.
 
 ```bash
-# Nếu chạy bằng script
-# Log in ra terminal trực tiếp
+# Kiểm tra proxy còn sống
+curl http://192.168.0.101:8000/__stats__
 
-# Nếu chạy bằng Docker
-docker compose logs ai-engine -f
+# Nếu không phản hồi → vào máy 192.168.0.101:
+# cd D:\Work\ClaudeTokenTracker && start_proxy.bat
+```
+
+### Vấn đề 5: Web UI trắng, lỗi JS
+
+1. `F12` → tab **Console** → xem lỗi đỏ
+2. Xóa cache: `Ctrl+Shift+Delete` → Clear All → Reload
+
+### Restart toàn bộ từ đầu
+
+```bash
+ssh user@192.168.0.39
+cd AISystemIntelligencePlatform
+docker compose down
+docker compose up -d --build
+docker compose logs -f
 ```
 
 ---
 
-## Tóm tắt ports cần biết
+## Tóm tắt ports
 
-| Service | Port | Chạy ở đâu | Dùng để |
-|---------|------|-----------|---------|
-| **AI Engine UI** | **33898** | **Máy bạn** | **Xem dashboard** |
-| Prometheus | 9090 | Server | Thu thập metrics |
-| Loki | 3100 | Server | Thu thập logs |
-| Grafana | 3000 | Server | Dashboard thô |
-| AlertManager | 9093 | Server | Quản lý alerts |
-| OTEL Collector | 4317/4318 | Server | Nhận telemetry từ app |
+| Service | Port | URL | Mục đích |
+|---------|------|-----|---------|
+| **AI Monitor** | **33898** | `http://192.168.0.39:33898` | **Dashboard AI — dùng hàng ngày** |
+| Prometheus | 9090 | `http://192.168.0.39:9090` | Query metrics, xem targets |
+| Grafana | 3000 | `http://192.168.0.39:3000` | Đồ thị chi tiết (admin/admin123) |
+| Loki | 3100 | `http://192.168.0.39:3100` | Query logs |
+| AlertManager | 9093 | `http://192.168.0.39:9093` | Xem và quản lý alerts |
+| OTEL Collector | 4317/4318 | — | Nhận telemetry từ ứng dụng |
+| Node Exporter | 9100 | — | Metrics CPU/RAM/Disk server |
+| cAdvisor | 8080 | `http://192.168.0.39:8080` | Metrics Docker containers |
 
 ---
 
-*AI System Intelligence Platform v2.0*
+## Luồng hoạt động
+
+```
+Mỗi 5 phút (cấu hình được):
+
+  AI Engine (Docker, cùng server)
+    ├─► prometheus:9090  →  CPU, RAM, Disk, API latency, error rate, queue
+    ├─► loki:3100        →  Logs lỗi 15 phút gần nhất
+    └─► Claude AI        →  STATUS: OK / WARNING / CRITICAL + phân tích
+         ├─► Lưu vào SQLite DB
+         └─► Nếu WARNING/CRITICAL → Gửi Google Chat
+
+Khi AlertManager firing:
+  AlertManager → webhook → AI Engine /api/webhooks/alertmanager
+    └─► Phân tích ngay → Gửi Google Chat kèm runbook
+
+Người dùng:
+  Browser → http://192.168.0.39:33898 → Xem dashboard, chat với AI
+```
+
+---
+
+*AI System Intelligence Platform v2.0 — https://github.com/hungngominh/AISystemIntelligencePlatform*
